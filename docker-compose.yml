@@ -1,0 +1,91 @@
+version: "3.8"
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: evalforge_db
+    restart: always
+    environment:
+      POSTGRES_USER: evalforge
+      POSTGRES_PASSWORD: evalforge_password
+      POSTGRES_DB: evalforge_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evalforge -d evalforge_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: evalforge_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    container_name: evalforge_backend
+    restart: always
+    environment:
+      DATABASE_URL: postgresql://evalforge:evalforge_password@db:5432/evalforge_db
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      ENABLE_INLINE_WORKER: "false"
+      DEMO_MODE: "true"
+      SECRET_KEY: "evalforge_production_secret_key_change_me_before_launch"
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "python seed_data.py && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    container_name: evalforge_worker
+    restart: always
+    environment:
+      DATABASE_URL: postgresql://evalforge:evalforge_password@db:5432/evalforge_db
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "celery -A app.workers.celery_app.celery_app worker --loglevel=info --concurrency=4"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    container_name: evalforge_frontend
+    restart: always
+    environment:
+      NEXT_PUBLIC_API_URL: http://backend:8000/api/v1
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
